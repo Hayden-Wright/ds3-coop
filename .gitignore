@@ -15,3 +15,7 @@ patches/build/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Build output (rebuildable from source)
+patches/**/build/*.exe
+patches/**/build/*.dll
