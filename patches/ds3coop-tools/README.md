@@ -81,7 +81,7 @@ timestamp      : 0x639c4ddd (ожидался 0x639c4ddd)
 
 ```bash
 cd patches/ds3coop-tools
-x86_64-w64-mingw32-g++ -std=c++20 -O2 -shared \
+x86_64-w64-mingw32-g++ -std=c++20 -O2 -shared -static \
   -static-libgcc -static-libstdc++ \
   -o build/ds3coop_tools.dll src/ds3coop_tools.cpp
 
@@ -92,3 +92,15 @@ x86_64-w64-mingw32-g++ -std=c++20 -O2 -municode \
 
 Проверено: компилятор `x86_64-w64-mingw32-g++ 13-posix`, сборка проходит без ошибок,
 на выходе PE32+ x86-64.
+
+**Флаг `-static` обязателен.** Без него DLL линкуется с `libwinpthread-1.dll`,
+которого на обычной Windows нет, и загрузка падает с ошибкой 126
+(`ERROR_MOD_NOT_FOUND`). Это поймано тестом: DLL молча не грузилась,
+и лог не создавался.
+
+После сборки зависимости должны быть только системные:
+
+```bash
+objdump -p build/ds3coop_tools.dll | grep "DLL Name"
+# должно быть только KERNEL32.dll и msvcrt.dll
+```
