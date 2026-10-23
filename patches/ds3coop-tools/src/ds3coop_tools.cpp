@@ -23,7 +23,15 @@
 namespace {
 
 constexpr std::size_t kDs3ImageSize = 0x56f4000u;
-constexpr unsigned long kDs3Timestamp = 0x639c4ddu;
+// Внимание: ровно 8 hex-цифр. В прошлой версии стояло 0x639c4ddu — на одну
+// цифру меньше (0x0639C4DD), и проверка всегда давала «НЕ СОВПАЛА».
+constexpr unsigned long kDs3Timestamp = 0x639c4dddu;
+
+// RTTI-имя класса менеджера меню в игре. Раньше здесь стояло «SprjMenuMan»,
+// но такой строки в DarkSoulsIII.exe нет вообще — она есть только в ds3sc.dll
+// (мод), откуда и была взята по ошибке. Настоящее имя: NS_SPRJ::MenuMan,
+// его RTTI-строка лежит в образе по RVA 0x4588310.
+constexpr char kMenuClassName[] = ".?AVMenuMan@NS_SPRJ@@";
 
 FILE* g_log = nullptr;
 
@@ -198,17 +206,18 @@ DWORD WINAPI Worker(LPVOID) {
     // Это доказывает, что мы умеем находить объекты игры, не зная адресов.
     const ULONGLONG scan_started = GetTickCount64();
     std::size_t regions = 0;
-    std::uintptr_t name_addr = 0;
-    const char* needle = "SprjMenuMan";
-    name_addr = FindBytes(info.base, info.base + info.size, needle,
-                          std::strlen(needle), &regions);
+    const std::uintptr_t name_addr =
+        FindBytes(info.base, info.base + info.size, kMenuClassName,
+                  std::strlen(kMenuClassName), &regions);
     Log("поиск строки   : %llu мс, просмотрено доступных регионов: %zu",
         static_cast<unsigned long long>(GetTickCount64() - scan_started),
         regions);
 
     if (name_addr) {
-        Log("строка SprjMenuMan найдена по адресу 0x%llx",
+        Log("строка %s найдена по адресу 0x%llx", kMenuClassName,
             static_cast<unsigned long long>(name_addr));
+        Log("RVA строки     : 0x%llx",
+            static_cast<unsigned long long>(name_addr - info.base));
         const ULONGLONG ref_started = GetTickCount64();
         std::size_t ref_regions = 0;
         const std::uintptr_t ref =
@@ -217,16 +226,21 @@ DWORD WINAPI Worker(LPVOID) {
         Log("поиск ссылки   : %llu мс, регионов: %zu",
             static_cast<unsigned long long>(GetTickCount64() - ref_started),
             ref_regions);
-        Log("ссылка на неё       : %s", ref ? "найдена" : "не найдена");
+        Log("ссылка на неё  : %s", ref ? "найдена" : "не найдена");
     } else {
-        Log("строка SprjMenuMan не найдена");
+        Log("строка %s НЕ найдена", kMenuClassName);
     }
 
     Log("всего          : %llu мс",
         static_cast<unsigned long long>(GetTickCount64() - started));
 
     // Итог печатаем одной строкой, чтобы проверку можно было делать скриптом.
-    Log("ИТОГ: %s", (size_ok && ts_ok) ? "PASS" : "FAIL (версия игры)");
+    // Отдельно показываем, что именно не совпало — иначе разбор лога
+    // превращается в угадывание.
+    const bool identity_ok = size_ok && ts_ok;
+    if (!size_ok) Log("причина        : размер образа не совпал");
+    if (!ts_ok) Log("причина        : timestamp не совпал");
+    Log("ИТОГ: %s", identity_ok ? "PASS" : "FAIL (версия игры)");
     return 0;
 }
 
