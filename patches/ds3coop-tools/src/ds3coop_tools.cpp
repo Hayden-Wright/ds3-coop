@@ -59,7 +59,11 @@ constexpr ClassInfo kClasses[] = {
     {"GameMan", 0x27d89c8},
 };
 
-constexpr std::size_t kMaxHitsPerClass = 32;
+// Потолок на класс. Было 32, и FrpgMenuSys давал ровно 32 в обоих запусках —
+// то есть поиск упирался в потолок, и настоящее число было неизвестно.
+// 256 заведомо выше любого ожидаемого количества: если и это упрётся,
+// в логе появится предупреждение.
+constexpr std::size_t kMaxHitsPerClass = 256;
 constexpr int kScans = 6;         // сколько раз повторить поиск
 constexpr DWORD kScanIntervalMs = 5000;
 
@@ -432,6 +436,14 @@ DWORD WINAPI Worker(LPVOID) {
             const bool changed = hits != previous[c];
             if (changed) {
                 Log("%-22s : найдено %zu", kClasses[c].name, hits.size());
+                // Ровно потолок означает, что объектов может быть больше:
+                // поиск останавливается на kMaxHitsPerClass. Без этого
+                // предупреждения обрезанное число легко принять за точное.
+                if (hits.size() >= kMaxHitsPerClass) {
+                    Log("%-22s : ВНИМАНИЕ — упёрлось в потолок %zu, "
+                        "настоящее число может быть больше",
+                        kClasses[c].name, kMaxHitsPerClass);
+                }
                 for (const auto addr : hits) {
                     // Адрес внутри образа игры — это статическая ссылка
                     // (например, сама таблица RTTI), а не живой объект.
