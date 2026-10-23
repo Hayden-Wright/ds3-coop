@@ -297,6 +297,14 @@ std::vector<std::vector<std::uintptr_t>> FindAllInstances(
 // ещё раз при чтении: между поиском и печатью объект могли освободить и
 // переиспользовать под другие данные. В логе 02:31 так и вышло — «GameMan»
 // напечатал первым словом 0x7ffeaa0172ef вместо адреса своей vtable.
+//
+// Печатаем ОБА представления: 8-байтные слова (как раньше, удобно для
+// указателей) и 4-байтные (для чисел). Это не избыточность, а исправление
+// конкретной ошибки чтения: в логе 02:57 поле [08] показало 7ff410004000,
+// потому что 4-байтное число 0x10004000 слиплось с соседним полем.
+// Младшие 32 бита того значения — ровно 0x10004000, то есть настоящий номер
+// слота. Читая только 8-байтные слова, легко принять соседнее поле за часть
+// числа и сделать неверный вывод.
 void DumpObject(const char* label, std::uintptr_t obj,
                 std::uintptr_t expected_vt) {
     constexpr int kWords = 8;
@@ -327,6 +335,22 @@ void DumpObject(const char* label, std::uintptr_t obj,
         used += written < sizeof(line) - used ? written : sizeof(line) - used - 1;
     }
     Log("  %s @ 0x%llx:%s", label, static_cast<unsigned long long>(obj), line);
+
+    // Те же байты, но по 4 байта. Показывают, где на самом деле кончается
+    // каждое поле, если оно 4-байтное.
+    char line32[512]{};
+    used = 0;
+    const auto* words32 = reinterpret_cast<const std::uint32_t*>(words);
+    for (int i = 0; i < kWords * 2; ++i) {
+        if (used >= sizeof(line32) - 1) break;
+        const int n = std::snprintf(line32 + used, sizeof(line32) - used,
+                                    " [%02x]=%x", i * 4, words32[i]);
+        if (n <= 0) break;
+        const std::size_t written = static_cast<std::size_t>(n);
+        used += written < sizeof(line32) - used ? written
+                                                : sizeof(line32) - used - 1;
+    }
+    Log("  %*s 32-бит:%s", static_cast<int>(std::strlen(label)), "", line32);
 }
 
 // Вся работа. Запускается в отдельном потоке, не в DllMain.
