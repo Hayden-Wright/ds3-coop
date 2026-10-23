@@ -1,73 +1,68 @@
 # DS3 Co-op
 
-Russian-language project workspace for playing **Dark Souls III** in two-player
-co-op, built on top of Yui's **Seamless Co-op** mod.
+Кооператив для **Dark Souls III** на двоих, построенный поверх мода
+**Seamless Co-op** от Yui (LukeYui).
 
-The goal is four behaviours the base mod does not fully provide:
+Цель — четыре поведения, которых базовый мод не даёт полностью:
 
-1. **Souls for both players** — souls are awarded to every player regardless of who killed the enemy.
-2. **Loot for both players** — an item picked up by one player appears in each player's inventory;
-   each can pick up independently.
-3. **Independent NPC interaction** — each player can use merchants, the blacksmith and
-   level-up NPCs on their own.
-4. **Individual spending** — souls and items are deducted only from the player who is
-   trading, upgrading or levelling.
+1. **Души обоим игрокам** — души начисляются каждому, независимо от того, кто убил моба.
+2. **Лут обоим** — предмет, подобранный одним игроком, попадает в инвентарь каждого;
+   каждый подбирает независимо.
+3. **Свои NPC** — каждый игрок сам пользуется торговцами, кузнецом и прокачкой.
+4. **Индивидуальные траты** — души и предметы списываются только у того, кто
+   торгует, кует или качается.
 
-Additional goal: a **Russian localization** of the mod.
+Дополнительно: **русская локализация** мода.
 
-> Notes, plans and session state are written in Russian because the owner is
-> Russian-speaking. Code, commits and this README are in English.
+## Состояние
 
-## Status
-
-| Stage | State |
+| Этап | Состояние |
 |---|---|
-| Research: what the base mod already does | done — see [`notes/01-mod-features.md`](notes/01-mod-features.md) |
-| Install the mod + Russian locale | done, locale not yet picked up (game still in English) |
-| Verify the four behaviours in a live session | **not started** |
-| Patch for the missing behaviours | not started |
+| Исследование: что уже делает базовый мод | готово — см. [`notes/01-mod-features.md`](notes/01-mod-features.md) |
+| Установка мода + русская локализация | **готово, работает** |
+| Проверка четырёх пунктов в живой игре | не начата — чек-лист в [`notes/03-live-test.md`](notes/03-live-test.md) |
+| Патч на недостающее | не начат |
 
-Current state of work, blockers and next steps: [`STATE.md`](STATE.md).
-Task list: [`TODO.md`](TODO.md). History: [`CHANGELOG.md`](CHANGELOG.md).
+Текущее состояние, блокеры и следующие шаги: [`STATE.md`](STATE.md).
+Список задач: [`TODO.md`](TODO.md). История изменений: [`CHANGELOG.md`](CHANGELOG.md).
 
-## What the base mod does today
+## Что делает базовый мод
 
-Short version — the mod synchronises the world, combat, event flags and sessions,
-but **not** the wallet or the inventory. It has no economy, souls or shop subsystem
-at all (confirmed by static analysis of `ds3sc.dll`).
+Коротко: мод синхронизирует мир, бой, флаги событий и сессии, но **не** кошелёк
+и **не** инвентарь. Подсистем экономики, душ и магазинов в нём нет вообще —
+это подтверждено статическим анализом `ds3sc.dll`.
 
-| Requirement | Status in the base mod |
+| Требование | Состояние в базовом моде |
 |---|---|
-| 1. Souls for both | **No** — each player earns souls only for their own kills |
-| 2. Loot for both | **Partial** — world pickups are instanced per player; scripted grants are only partly synced |
-| 3. Independent NPCs | **Partial** — a guest can use bonfire menus, but merchant stock follows the host's progress |
-| 4. Individual spending | **Likely yes** — separate characters and saves, no shared bank |
+| 1. Души обоим | **скорее всего уже работает** — призванный игрок получает души за убийства в чужом мире |
+| 2. Лут обоим | **работает для предметов с земли** (инстансированы), для скриптовых выдач — частично |
+| 3. Свои NPC | **сломано** — подтверждено в игре: гость не смог прокачать фляски |
+| 4. Индивидуальные траты | работает по устройству: у каждого свой персонаж и сейв |
 
-These are documented findings, not test results. See [`notes/01-mod-features.md`](notes/01-mod-features.md)
-for sources and the caveats.
+Подробности и источники: [`notes/02-what-works.md`](notes/02-what-works.md).
 
-## Layout
+## Структура
 
 ```
-STATE.md      handoff file — a new session reads this first
-TODO.md       task list by stage
-CHANGELOG.md  what changed, when, which files
-notes/        research notes and evidence
-mod/          our own artifacts: the Russian locale source
-patches/      patches layered on top of the mod (not started)
-backups/      local saves and game snapshots (git-ignored, never published)
-local/        private machine state (git-ignored)
+STATE.md      точка восстановления контекста — новый чат читает первым
+TODO.md       задачи по этапам
+CHANGELOG.md  что изменилось, когда, какие файлы
+notes/        заметки, исследование, чек-лист живой проверки
+mod/          наши артефакты: исходник русской локали
+patches/      патчи поверх мода (пока пусто)
+backups/      сохранения и снимки игры (в git не попадает)
+local/        личное состояние машины (в git не попадает)
 ```
 
-## Ground rules
+## Правила
 
-- No anti-cheat bypass, no connection to FromSoftware servers.
-- Co-op only through the mod, with its separate `.co2` saves — never on retail saves.
-- No game files or assets in this repository.
-- Patches ship as a separate package; the author's files are not modified.
+- Античит не трогаем, к серверам FromSoftware не подключаемся.
+- Кооп только через мод, на его отдельных сохранениях `.co2` — никогда на обычных.
+- Файлы игры и ассеты в репозиторий не попадают.
+- Патчи выходят отдельным пакетом; файлы автора не изменяются.
 
-## Credits
+## Благодарности
 
-- **Seamless Co-op** by Yui (LukeYui) — [Nexus Mods](https://www.nexusmods.com/darksouls3/mods/1895).
-  This project builds on it and does not redistribute it.
-- Working method and playbooks: [coop-anything](https://github.com/cranebeaker/coop-anything).
+- **Seamless Co-op** — Yui (LukeYui), [Nexus Mods](https://www.nexusmods.com/darksouls3/mods/1895).
+  Проект строится поверх него и не распространяет его файлы.
+- Методика и playbook'и: [coop-anything](https://github.com/cranebeaker/coop-anything).
