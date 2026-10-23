@@ -19,3 +19,6 @@ Thumbs.db
 # Build output (rebuildable from source)
 patches/**/build/*.exe
 patches/**/build/*.dll
+
+# Chat screenshots kept locally, not part of the project
+/*.png

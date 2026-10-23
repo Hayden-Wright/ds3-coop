@@ -6,6 +6,10 @@
 //
 // Ничего не патчим, никаких байтов игры не трогаем. Только чтение памяти
 // по адресам, которые находит сама игра, плюс запись текстового лога.
+//
+// Важно про устройство: вся работа идёт в отдельном потоке, а не в DllMain.
+// В DllMain нельзя долго работать — там держится блокировка загрузчика,
+// и тяжёлый код в ней вешает старт игры.
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -22,7 +26,6 @@ constexpr std::size_t kDs3ImageSize = 0x56f4000u;
 constexpr unsigned long kDs3Timestamp = 0x639c4ddu;
 
 FILE* g_log = nullptr;
-HMODULE g_game = nullptr;
 
 void Log(const char* fmt, ...) {
     if (!g_log) return;
@@ -68,33 +71,162 @@ ModuleInfo ReadModule(HMODULE module) {
     return info;
 }
 
-// Безопасное чтение: проверяем, что страница действительно доступна,
-// иначе чтение по «мусорному» указателю уронит игру.
-bool Readable(const void* address, std::size_t bytes) {
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (!VirtualQuery(address, &mbi, sizeof(mbi))) return false;
+// Можно ли читать эту страницу. Вызывается один раз на регион памяти,
+// а не на каждый байт — иначе на 87 МБ образа уходят миллионы системных вызовов.
+bool RegionReadable(const MEMORY_BASIC_INFORMATION& mbi) {
     if (mbi.State != MEM_COMMIT) return false;
     if (mbi.Protect & PAGE_GUARD) return false;
     if (mbi.Protect == PAGE_NOACCESS) return false;
-    const auto begin = reinterpret_cast<std::uintptr_t>(address);
-    const auto end = begin + bytes;
-    const auto region_end =
-        reinterpret_cast<std::uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
-    return end >= begin && end <= region_end;
+    constexpr DWORD kReadable = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
+                                PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
+                                PAGE_EXECUTE_WRITECOPY;
+    return (mbi.Protect & kReadable) != 0;
 }
 
-// Ищем в памяти игры ссылку на строку-имя класса. Так мы находим объект
-// менеджера, не зная заранее его адреса. Ничего не пишем.
-std::uintptr_t FindPointerTo(std::uintptr_t start, std::size_t span,
-                             std::uintptr_t target) {
-    for (std::uintptr_t p = start; p + sizeof(std::uintptr_t) <= start + span;
-         p += alignof(std::uintptr_t)) {
-        if (!Readable(reinterpret_cast<const void*>(p), sizeof(std::uintptr_t)))
-            continue;
-        std::uintptr_t value = 0;
-        std::memcpy(&value, reinterpret_cast<const void*>(p), sizeof(value));
-        if (value == target) return p;
+// Обходим память регионами: одно обращение к VirtualQuery на регион.
+// Для каждого доступного куска вызываем fn(base, size); если fn вернула true,
+// обход прекращается. Возвращает число просмотренных доступных регионов.
+template <typename Fn>
+std::size_t ForEachReadableRegion(std::uintptr_t begin, std::uintptr_t end,
+                                  Fn&& fn) {
+    std::size_t regions = 0;
+    std::uintptr_t p = begin;
+    while (p < end) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(p), &mbi, sizeof(mbi)))
+            break;
+        const auto region_begin =
+            reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+        const auto region_end = region_begin + mbi.RegionSize;
+        if (region_end <= p) break;  // защита от зацикливания
+
+        if (RegionReadable(mbi)) {
+            ++regions;
+            const auto scan_begin = p;
+            const auto scan_end = region_end < end ? region_end : end;
+            if (scan_end > scan_begin &&
+                fn(reinterpret_cast<const char*>(scan_begin),
+                   static_cast<std::size_t>(scan_end - scan_begin))) {
+                break;
+            }
+        }
+        p = region_end;
     }
+    return regions;
+}
+
+// Поиск подстроки в образе игры. Возвращает адрес первого вхождения или 0.
+std::uintptr_t FindBytes(std::uintptr_t begin, std::uintptr_t end,
+                         const char* needle, std::size_t len,
+                         std::size_t* regions_scanned) {
+    std::uintptr_t found = 0;
+    const std::size_t regions = ForEachReadableRegion(
+        begin, end, [&](const char* base, std::size_t size) -> bool {
+            if (size < len) return false;
+            const char* cur = base;
+            const char* last = base + size - len;
+            while (cur <= last) {
+                const auto* hit = static_cast<const char*>(std::memchr(
+                    cur, needle[0], static_cast<std::size_t>(last - cur) + 1));
+                if (!hit) break;
+                if (std::memcmp(hit, needle, len) == 0) {
+                    found = reinterpret_cast<std::uintptr_t>(hit);
+                    return true;
+                }
+                cur = hit + 1;
+            }
+            return false;
+        });
+    if (regions_scanned) *regions_scanned = regions;
+    return found;
+}
+
+// Поиск ссылки (указателя) на заданный адрес в образе игры.
+std::uintptr_t FindPointerTo(std::uintptr_t begin, std::uintptr_t end,
+                             std::uintptr_t target, std::size_t* regions_scanned) {
+    std::uintptr_t found = 0;
+    const std::size_t regions = ForEachReadableRegion(
+        begin, end, [&](const char* base, std::size_t size) -> bool {
+            const std::size_t count = size / sizeof(std::uintptr_t);
+            const auto* words = reinterpret_cast<const std::uintptr_t*>(base);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (words[i] == target) {
+                    found = reinterpret_cast<std::uintptr_t>(&words[i]);
+                    return true;
+                }
+            }
+            return false;
+        });
+    if (regions_scanned) *regions_scanned = regions;
+    return found;
+}
+
+// Вся работа. Запускается в отдельном потоке, не в DllMain.
+DWORD WINAPI Worker(LPVOID) {
+    const ULONGLONG started = GetTickCount64();
+
+    HMODULE game = nullptr;
+    for (int attempt = 0; attempt < 300 && !game; ++attempt) {
+        game = GetModuleHandleA("DarkSoulsIII.exe");
+        if (!game) Sleep(100);
+    }
+    if (!game) {
+        Log("ОШИБКА: DarkSoulsIII.exe не найден в процессе");
+        Log("ИТОГ: FAIL (игра не загрузилась)");
+        return 0;
+    }
+
+    const ModuleInfo info = ReadModule(game);
+    if (!info.ok) {
+        Log("ОШИБКА: не удалось прочитать PE-заголовок игры");
+        Log("ИТОГ: FAIL (заголовок)");
+        return 0;
+    }
+
+    Log("база игры      : 0x%llx",
+        static_cast<unsigned long long>(info.base));
+    Log("размер образа  : 0x%zx (ожидался 0x%zx)", info.size,
+        static_cast<std::size_t>(kDs3ImageSize));
+    Log("timestamp      : 0x%08lx (ожидался 0x%08lx)", info.timestamp,
+        kDs3Timestamp);
+
+    const bool size_ok = info.size == kDs3ImageSize;
+    const bool ts_ok = info.timestamp == kDs3Timestamp;
+    Log("идентичность   : %s", (size_ok && ts_ok) ? "СОВПАЛА" : "НЕ СОВПАЛА");
+
+    // Ищем строку-имя класса менеджера меню в образе игры, затем ссылку на неё.
+    // Это доказывает, что мы умеем находить объекты игры, не зная адресов.
+    const ULONGLONG scan_started = GetTickCount64();
+    std::size_t regions = 0;
+    std::uintptr_t name_addr = 0;
+    const char* needle = "SprjMenuMan";
+    name_addr = FindBytes(info.base, info.base + info.size, needle,
+                          std::strlen(needle), &regions);
+    Log("поиск строки   : %llu мс, просмотрено доступных регионов: %zu",
+        static_cast<unsigned long long>(GetTickCount64() - scan_started),
+        regions);
+
+    if (name_addr) {
+        Log("строка SprjMenuMan найдена по адресу 0x%llx",
+            static_cast<unsigned long long>(name_addr));
+        const ULONGLONG ref_started = GetTickCount64();
+        std::size_t ref_regions = 0;
+        const std::uintptr_t ref =
+            FindPointerTo(info.base, info.base + info.size, name_addr,
+                          &ref_regions);
+        Log("поиск ссылки   : %llu мс, регионов: %zu",
+            static_cast<unsigned long long>(GetTickCount64() - ref_started),
+            ref_regions);
+        Log("ссылка на неё       : %s", ref ? "найдена" : "не найдена");
+    } else {
+        Log("строка SprjMenuMan не найдена");
+    }
+
+    Log("всего          : %llu мс",
+        static_cast<unsigned long long>(GetTickCount64() - started));
+
+    // Итог печатаем одной строкой, чтобы проверку можно было делать скриптом.
+    Log("ИТОГ: %s", (size_ok && ts_ok) ? "PASS" : "FAIL (версия игры)");
     return 0;
 }
 
@@ -111,62 +243,15 @@ BOOL APIENTRY DllMain(HMODULE self, DWORD reason, LPVOID) {
     Log("ds3coop-tools: загрузка");
     Log("версия сборки: %s %s", __DATE__, __TIME__);
 
-    // Даём игре догрузить модули: лаунчер внедряет нас очень рано.
-    for (int attempt = 0; attempt < 300 && !g_game; ++attempt) {
-        g_game = GetModuleHandleA("DarkSoulsIII.exe");
-        if (!g_game) Sleep(100);
-    }
-    if (!g_game) {
-        Log("ОШИБКА: DarkSoulsIII.exe не найден в процессе");
-        Log("ИТОГ: FAIL (игра не загрузилась)");
-        return TRUE;
-    }
-
-    const ModuleInfo info = ReadModule(g_game);
-    if (!info.ok) {
-        Log("ОШИБКА: не удалось прочитать PE-заголовок игры");
-        Log("ИТОГ: FAIL (заголовок)");
-        return TRUE;
-    }
-
-    Log("база игры      : 0x%llx",
-        static_cast<unsigned long long>(info.base));
-    Log("размер образа  : 0x%zx (ожидался 0x%zx)", info.size,
-        static_cast<std::size_t>(kDs3ImageSize));
-    Log("timestamp      : 0x%08lx (ожидался 0x%08lx)", info.timestamp,
-        kDs3Timestamp);
-
-    const bool size_ok = info.size == kDs3ImageSize;
-    const bool ts_ok = info.timestamp == kDs3Timestamp;
-    Log("идентичность   : %s", (size_ok && ts_ok) ? "СОВПАЛА" : "НЕ СОВПАЛА");
-
-    // Ищем строку-имя класса менеджера меню в образе игры, затем ссылку на неё.
-    // Это доказывает, что мы умеем находить объекты игры, не зная адресов.
-    std::uintptr_t name_addr = 0;
-    const char* needle = "SprjMenuMan";
-    for (std::size_t off = 0; off + 11 < info.size; ++off) {
-        const auto* p = reinterpret_cast<const char*>(info.base + off);
-        if (!Readable(p, 11)) {
-            off += 0xFFF;
-            continue;
-        }
-        if (std::memcmp(p, needle, 11) == 0) {
-            name_addr = info.base + off;
-            break;
-        }
-    }
-    if (name_addr) {
-        Log("строка SprjMenuMan найдена по адресу 0x%llx",
-            static_cast<unsigned long long>(name_addr));
-        const std::uintptr_t ref =
-            FindPointerTo(info.base, info.size, name_addr);
-        Log("ссылка на неё       : %s",
-            ref ? "найдена" : "не найдена");
+    // В DllMain только самое необходимое: открыть лог и уйти.
+    // Вся диагностика — в отдельном потоке, иначе блокировка загрузчика
+    // держится всё время скана и игра может не стартовать.
+    HANDLE thread = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    if (thread) {
+        CloseHandle(thread);
     } else {
-        Log("строка SprjMenuMan не найдена");
+        Log("ОШИБКА: не удалось создать рабочий поток");
+        Log("ИТОГ: FAIL (поток)");
     }
-
-    // Итог печатаем одной строкой, чтобы проверку можно было делать скриптом.
-    Log("ИТОГ: %s", (size_ok && ts_ok) ? "PASS" : "FAIL (версия игры)");
     return TRUE;
 }
