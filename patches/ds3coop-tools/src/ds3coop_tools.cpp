@@ -64,7 +64,16 @@ constexpr ClassInfo kClasses[] = {
 // 256 заведомо выше любого ожидаемого количества: если и это упрётся,
 // в логе появится предупреждение.
 constexpr std::size_t kMaxHitsPerClass = 256;
-constexpr int kScans = 6;         // сколько раз повторить поиск
+// Сканируем, пока жива игра, а не фиксированные 6 раз.
+//
+// Было 6 проходов с интервалом 5 с — окно около 50 секунд после запуска.
+// Этого не хватало: мир загружается по-разному, и в запуске 03:11 он не
+// успел попасть в окно, хотя владелец играл. Лог молча заканчивался, и это
+// выглядело как «объектов нет» вместо «мы перестали смотреть».
+//
+// Теперь проходы идут всё время работы игры. Потолок нужен только чтобы
+// лог не рос бесконечно: 2000 проходов x 5 с ≈ 2,8 часа.
+constexpr int kScans = 2000;
 constexpr DWORD kScanIntervalMs = 5000;
 
 FILE* g_log = nullptr;
@@ -426,8 +435,8 @@ DWORD WINAPI Worker(LPVOID) {
         return 0;
     }
 
-    Log("=== поиск объектов игры (каждые %lu мс, всего %d раз) ===",
-        static_cast<unsigned long>(kScanIntervalMs), kScans);
+    Log("=== поиск объектов игры (каждые %lu мс, пока игра открыта) ===",
+        static_cast<unsigned long>(kScanIntervalMs));
 
     // Абсолютные адреса vtable считаем один раз: база модуля не меняется.
     std::vector<std::uintptr_t> vftables;
@@ -450,10 +459,31 @@ DWORD WINAPI Worker(LPVOID) {
 
     for (int pass = 0; pass < kScans; ++pass) {
         if (pass > 0) Sleep(kScanIntervalMs);
+
+        // Игра закрылась — дальше сканировать нечего.
+        if (!GetModuleHandleA("DarkSoulsIII.exe")) {
+            Log("игра закрылась, поиск остановлен (t+%llu мс)",
+                static_cast<unsigned long long>(GetTickCount64() - started));
+            break;
+        }
+
+        const ULONGLONG pass_started = GetTickCount64();
         Log("--- проход %d (t+%llu мс) ---", pass + 1,
-            static_cast<unsigned long long>(GetTickCount64() - started));
+            static_cast<unsigned long long>(pass_started - started));
 
         const auto all = FindAllInstances(vftables, kMaxHitsPerClass, excluded);
+
+        // Сколько объектов каждого класса видно прямо сейчас. Пишем всегда,
+        // а не только при изменении: иначе лог молчит, и невозможно понять,
+        // работает поиск или уже остановился.
+        std::string summary;
+        for (std::size_t c = 0; c < std::size(kClasses); ++c) {
+            if (!summary.empty()) summary += " ";
+            summary += kClasses[c].name;
+            summary += "=";
+            summary += std::to_string(all[c].size());
+        }
+        Log("сейчас         : %s", summary.c_str());
 
         for (std::size_t c = 0; c < std::size(kClasses); ++c) {
             const auto& hits = all[c];
@@ -478,9 +508,6 @@ DWORD WINAPI Worker(LPVOID) {
                     DumpObject(kClasses[c].name, addr, vftables[c]);
                 }
                 previous[c] = hits;
-            } else if (pass == 0) {
-                Log("%-22s : найдено %zu (без изменений)", kClasses[c].name,
-                    hits.size());
             }
         }
     }
