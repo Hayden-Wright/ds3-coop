@@ -149,24 +149,29 @@ std::uintptr_t FindBytes(std::uintptr_t begin, std::uintptr_t end,
     return found;
 }
 
-// Поиск ссылки (указателя) на заданный адрес в образе игры.
-std::uintptr_t FindPointerTo(std::uintptr_t begin, std::uintptr_t end,
-                             std::uintptr_t target, std::size_t* regions_scanned) {
-    std::uintptr_t found = 0;
-    const std::size_t regions = ForEachReadableRegion(
-        begin, end, [&](const char* base, std::size_t size) -> bool {
-            const std::size_t count = size / sizeof(std::uintptr_t);
-            const auto* words = reinterpret_cast<const std::uintptr_t*>(base);
-            for (std::size_t i = 0; i < count; ++i) {
-                if (words[i] == target) {
-                    found = reinterpret_cast<std::uintptr_t>(&words[i]);
-                    return true;
-                }
-            }
-            return false;
-        });
-    if (regions_scanned) *regions_scanned = regions;
-    return found;
+// Поиск 4-байтных RVA-ссылок на заданный адрес. Нужен для RTTI: в MSVC
+// структуры RTTI ссылаются друг на друга через 4-байтные RVA, а не через
+// 8-байтные указатели. Обычный поиск указателя их не находит в принципе.
+std::size_t CountRvaRefs(std::uintptr_t begin, std::uintptr_t end,
+                         std::uint32_t rva, std::uintptr_t* first_ref) {
+    std::size_t hits = 0;
+    if (first_ref) *first_ref = 0;
+    ForEachReadableRegion(begin, end,
+                          [&](const char* base, std::size_t size) -> bool {
+                              const std::size_t count = size / sizeof(std::uint32_t);
+                              const auto* words =
+                                  reinterpret_cast<const std::uint32_t*>(base);
+                              for (std::size_t i = 0; i < count; ++i) {
+                                  if (words[i] == rva) {
+                                      if (hits == 0 && first_ref)
+                                          *first_ref = reinterpret_cast<std::uintptr_t>(
+                                              &words[i]);
+                                      ++hits;
+                                  }
+                              }
+                              return false;  // собираем все ссылки, не первую
+                          });
+    return hits;
 }
 
 // Вся работа. Запускается в отдельном потоке, не в DllMain.
@@ -216,17 +221,31 @@ DWORD WINAPI Worker(LPVOID) {
     if (name_addr) {
         Log("строка %s найдена по адресу 0x%llx", kMenuClassName,
             static_cast<unsigned long long>(name_addr));
+        const std::uintptr_t name_rva = name_addr - info.base;
         Log("RVA строки     : 0x%llx",
-            static_cast<unsigned long long>(name_addr - info.base));
+            static_cast<unsigned long long>(name_rva));
+
+        // В MSVC строка имени лежит внутри TypeDescriptor на смещении +16,
+        // поэтому TypeDescriptor начинается на 16 байт раньше.
+        const std::uintptr_t td_rva = name_rva - 0x10;
+        Log("RVA TypeDescrip: 0x%llx (строка внутри него, +16)",
+            static_cast<unsigned long long>(td_rva));
+
+        // Ссылки на RTTI-структуры в MSVC — 4-байтные RVA, а не 8-байтные
+        // указатели. Ищем именно их; поиск указателя здесь бессмысленен.
         const ULONGLONG ref_started = GetTickCount64();
-        std::size_t ref_regions = 0;
-        const std::uintptr_t ref =
-            FindPointerTo(info.base, info.base + info.size, name_addr,
-                          &ref_regions);
-        Log("поиск ссылки   : %llu мс, регионов: %zu",
+        std::uintptr_t first_ref = 0;
+        const std::size_t refs =
+            CountRvaRefs(info.base, info.base + info.size,
+                         static_cast<std::uint32_t>(td_rva), &first_ref);
+        Log("поиск RVA-ссылок: %llu мс, найдено: %zu",
             static_cast<unsigned long long>(GetTickCount64() - ref_started),
-            ref_regions);
-        Log("ссылка на неё  : %s", ref ? "найдена" : "не найдена");
+            refs);
+        if (refs && first_ref) {
+            Log("первая ссылка  : RVA 0x%llx",
+                static_cast<unsigned long long>(first_ref - info.base));
+        }
+        Log("ссылка на неё  : %s", refs ? "найдена" : "не найдена");
     } else {
         Log("строка %s НЕ найдена", kMenuClassName);
     }
