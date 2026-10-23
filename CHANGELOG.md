@@ -1,0 +1,54 @@
+# CHANGELOG — DS3 Co-op
+
+## 2026-10-24 — Этап 2: установка мода и русская локализация
+
+**Разрешение владельца:** да, на установку мода и русификацию. Полная копия игры
+не делалась — владелец готов переустановить игру, критичны только сохранения.
+
+**Резервные копии (созданы до установки):**
+- `backups\saves-2026-10-24\` — все сохранения:
+  - `01100001679cceff\DS30000.co2` — SHA-256 `4487f649afd871941341fe8df773ae67113cc192cc7a623d5a1597b7c2a05f74`
+  - `01100001679cceff\DS30000.sl2` — SHA-256 `2df1ab0fd6653f85fb0eea6c46f68542d8c9da77fb7be9f40efdd1c59b2bd192`
+  - `GraphicsConfig.xml`, `steam_autocloud.vdf`
+- `backups\game-orig-2026-10-24\` — `DarkSoulsIII.exe`, `steam_api64.dll`
+- `mod\DS3 Seamless Co-op v0.1.1-1895-0-1-1-1741470313.zip` — SHA-256 `da7d7d42…`
+
+**Установлено в `E:\...\DARK SOULS III\Game\`:**
+- `ds3sc_launcher.exe`
+- `SeamlessCoop\ds3sc.dll` (SHA-256 `a7869888c98f36c4874f7a7ff5e15e93c3cd9c453debef7d48b5e9012394d24d`)
+- `SeamlessCoop\ds3sc_settings.ini`
+- `SeamlessCoop\locale\english.json` (авторский)
+- `SeamlessCoop\locale\russian.json` (**новый файл, наш**)
+- `SeamlessCoop\crashpad\crashpad_handler.exe`
+
+**Изменено в `ds3sc_settings.ini` (ровно 2 строки, CRLF сохранены):**
+- `cooppassword = 123321` (в архиве было пусто)
+- `mod_language_override = russian`
+
+**Русификация:**
+- `mod\russian-locale\russian.json` — 43 ключа, перевод всех строк мода
+- Проверено скриптом: JSON валиден, набор ключей совпадает с `english.json` 1:1,
+  количество плейсхолдеров `{}` в каждой строке совпадает
+- Термины: Wanderer → Странник, Malcontent → Вторженец
+
+**Не изменялось:** `DarkSoulsIII.exe`, `Data*.bdt/bhd`, `steam_api64.dll`, сохранения.
+
+**Не проверено:** запуск игры, отображение русского текста, работа пароля.
+
+---
+
+## 2026-10-24 — Этап 1: исследование и восстановление контекста
+
+**Создано:**
+- `STATE.md`, `TODO.md`, `CHANGELOG.md`, `notes\01-mod-features.md`
+- Каталоги: `backups\`, `local\`, `mod\`, `patches\`, `notes\`
+
+**Проверено (только чтение):**
+- Игра 1.15.2, AppID 374320, Steam-библиотека только `E:\Steam`
+- Папка `Game\` на тот момент: мод отсутствовал (владелец удалил), ванильные файлы целы
+- Архив мода найден в `Downloads`, SHA-256 посчитан, содержимое просмотрено
+- Статический анализ `ds3sc.dll`: подсистемы мода
+
+**Найдено попутно:**
+- The Ashen Link DS3 Coop — пересборка ds3sc с LAN и косметикой; экономику не трогает
+- Локальной копии coop-anything в папке проекта нет (вопреки ожиданию владельца)

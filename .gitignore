@@ -1,0 +1,17 @@
+# Game files — never commit
+backups/
+local/
+*.dmp
+*.zip
+
+# Build artifacts
+patches/build/
+*.obj
+*.dll
+*.exe
+*.pdb
+
+# Editor/OS
+.DS_Store
+Thumbs.db
+*.swp

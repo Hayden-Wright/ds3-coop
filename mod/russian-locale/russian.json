@@ -1,0 +1,56 @@
+{
+	"GENERIC_INVALID": "Ничего интересного не происходит",
+
+	"GOODSNAME_HOSTINGITEM": "Кристальный медальон",
+	"GOODSNAME_JOININGITEM": "Каменный медальон",
+	"GOODSNAME_BREAKINITEM": "Богохульный медальон",
+	"GOODSNAME_LEAVINGITEM": "Ржавый медальон",
+	"GOODSNAME_GAMERULECHANGEITEM": "Зловещий фолиант",
+	"GOODSNAME_DRIEDFINGERITEM": "Сфера насмешника",
+
+	"GOODSINFO_HOSTINGITEM": "Создать бесшовную кооперативную сессию",
+	"GOODSINFO_JOININGITEM": "Присоединиться к бесшовной кооперативной сессии",
+	"GOODSINFO_BREAKINITEM": "Вторгнуться в бесшовную кооперативную сессию",
+	"GOODSINFO_LEAVINGITEM": "Распустить бесшовную кооперативную сессию",
+	"GOODSINFO_GAMERULECHANGEITEM": "Изменить правила мира",
+	"GOODSINFO_DRIEDFINGERITEM": "Приманить вторженцев",
+
+	"GOODSDESC_HOSTINGITEM": "— Описание предмета хоста —",
+	"GOODSDESC_JOININGITEM": "— Описание предмета присоединения —",
+	"GOODSDESC_BREAKINITEM": "— Описание предмета вторжения —",
+	"GOODSDESC_LEAVINGITEM": "— Описание предмета выхода —",
+	"GOODSDESC_GAMERULECHANGEITEM": "— Описание предмета правил мира —",
+	"GOODSDESC_DRIEDFINGERITEM": "—",
+
+	"MODMSG_FVFPLAYER": "Странник",
+	"MODMSG_FVBPLAYER": "Вторженец",
+	"MODMSG_BVFPLAYER": "Цель",
+	"MODMSG_BVBPLAYER": "Вторженец",
+
+	"MODMSG_WELCOMEFRIENDLY": "Странник {} присоединился",
+	"MODMSG_WELCOMEBREAKIN": "Вторженец {} вторгся",
+
+	"MODMSG_DEADFRIENDLY": "Странник {} погиб",
+	"MODMSG_DEADBREAKIN": "Вторженец {} погиб",
+
+	"MODMSG_INVASIONWIN": "Цель выполнена\nВозвращение в свой мир...",
+
+	"MODMSG_JOININGINPROGRESS": "Присоединение к другому миру как Странник",
+	"MODMSG_INVADINGINPROGRESS": "Вторжение в другой мир как Вторженец",
+	"MODMSG_JOINBLOCKED": "Не удалось присоединиться: хост сессии заблокировал вас",
+	"MODMSG_JOINFAILED": "Не удалось присоединиться: нет свободных слотов игроков",
+	"MODMSG_BLOCKEDJOIN": "Не удалось присоединиться: вы заблокировали хоста сессии",
+	"MODMSG_FAILEDJOIN": "Не удалось присоединиться: хост не найден",
+	"MODMSG_NOLOBBYFRIEND": "Сессии не найдены",
+	"MODMSG_NOLOBBYINVADE": "Не удалось найти сессию для вторжения",
+	"MODMSG_INVASIONINTRODUCTION": "Вторжение в другой мир\n Победите странников: {}",
+
+	"MODMSG_NOAOALICENCE": "Хост переместился на карту DLC, которой у вас нет\nВозвращение в свой мир...",
+	"MODMSG_NORCLICENCE": "Хост переместился на карту DLC, которой у вас нет\nВозвращение в свой мир...",
+
+	"MODMSG_TOOGGLEFRIENDFIREON": "Урон по союзникам включён",
+	"MODMSG_TOOGGLEFRIENDFIGHTON": "Урон по союзникам включён (PvP)",
+	"MODMSG_TOOGGLEFRIENDFIGHTOFF": "Урон по союзникам выключен",
+
+	"CREDITS": "LukeYui"
+}
