@@ -146,7 +146,25 @@ void ForEachReadableRegion(std::uintptr_t begin, std::uintptr_t end, Fn&& fn) {
     }
 }
 
+// Чтение памяти через ReadProcessMemory.
+//
+// Почему не обычная загрузка по указателю: между проверкой VirtualQuery и
+// чтением игра может освободить или защитить страницу — тогда обычное чтение
+// роняет ВЕСЬ процесс (так и случилось 02:22, код 0xc0000005 по смещению
+// 0x19fd). ReadProcessMemory в этом случае просто возвращает FALSE.
+bool SafeRead(std::uintptr_t addr, void* out, std::size_t size) {
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(),
+                           reinterpret_cast<const void*>(addr), out, size,
+                           &got)) {
+        return false;
+    }
+    return got == size;
+}
+
 // Поиск подстроки в образе игры. Возвращает адрес первого вхождения или 0.
+// Образ игры замаплен на всё время жизни процесса и не освобождается,
+// поэтому здесь прямое чтение безопасно — в отличие от поиска по всей памяти.
 std::uintptr_t FindBytes(std::uintptr_t begin, std::uintptr_t end,
                          const char* needle, std::size_t len) {
     std::uintptr_t found = 0;
@@ -195,12 +213,19 @@ std::size_t CountRvaRefs(std::uintptr_t begin, std::uintptr_t end,
     return hits;
 }
 
-// Живые объекты класса: адреса, где первое поле (указатель на vtable)
-// равно ожидаемому. Объекты игры выделены в куче, поэтому ищем по всей
-// доступной памяти процесса.
-std::vector<std::uintptr_t> FindInstances(std::uintptr_t vftable_abs,
-                                          std::size_t max_hits) {
-    std::vector<std::uintptr_t> hits;
+// Ищем сразу все классы за один проход по памяти. Раньше на каждый класс
+// приходился отдельный проход по всей памяти — 10 проходов вместо одного,
+// то есть в 10 раз больше чтения при том же результате.
+//
+// Читаем кусками через ReadProcessMemory, а не напрямую по указателю:
+// игра в это время выделяет и освобождает память, и прямое чтение может
+// попасть на только что освобождённую страницу. ReadProcessMemory в таком
+// случае вернёт FALSE, а не уронит процесс.
+std::vector<std::vector<std::uintptr_t>> FindAllInstances(
+    const std::vector<std::uintptr_t>& vftables, std::size_t max_hits) {
+    constexpr std::size_t kChunk = 0x10000;  // 64 КБ — один вызов на кусок
+    std::vector<std::vector<std::uintptr_t>> all(vftables.size());
+    std::vector<std::uintptr_t> buffer(kChunk / sizeof(std::uintptr_t));
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
     const auto begin =
@@ -208,29 +233,44 @@ std::vector<std::uintptr_t> FindInstances(std::uintptr_t vftable_abs,
     const auto end =
         reinterpret_cast<std::uintptr_t>(si.lpMaximumApplicationAddress);
 
-    ForEachReadableRegion(begin, end,
-                          [&](const char* base, std::size_t size) -> bool {
-                              const std::size_t count =
-                                  size / sizeof(std::uintptr_t);
-                              const auto* words =
-                                  reinterpret_cast<const std::uintptr_t*>(base);
-                              for (std::size_t i = 0; i < count; ++i) {
-                                  if (words[i] == vftable_abs) {
-                                      hits.push_back(reinterpret_cast<std::uintptr_t>(
-                                          &words[i]));
-                                      if (hits.size() >= max_hits) return true;
-                                  }
-                              }
-                              return false;
-                          });
-    return hits;
+    ForEachReadableRegion(
+        begin, end, [&](const char* base, std::size_t size) -> bool {
+            const auto region_begin = reinterpret_cast<std::uintptr_t>(base);
+            for (std::size_t off = 0; off < size; off += kChunk) {
+                const std::size_t want =
+                    size - off < kChunk ? size - off : kChunk;
+                const std::size_t words_want = want / sizeof(std::uintptr_t);
+                if (words_want == 0) break;
+                const auto addr = region_begin + off;
+                if (!SafeRead(addr, buffer.data(),
+                              words_want * sizeof(std::uintptr_t))) {
+                    continue;  // страницу уже отдали — пропускаем
+                }
+                for (std::size_t i = 0; i < words_want; ++i) {
+                    const std::uintptr_t word = buffer[i];
+                    if (!word) continue;
+                    for (std::size_t c = 0; c < vftables.size(); ++c) {
+                        if (word != vftables[c]) continue;
+                        if (all[c].size() >= max_hits) break;
+                        all[c].push_back(addr + i * sizeof(std::uintptr_t));
+                    }
+                }
+            }
+            return false;
+        });
+    return all;
 }
 
 // Печатает первые поля объекта — подсказка, какие смещения читать дальше.
+// Через SafeRead: объект мог быть освобождён между поиском и чтением.
 void DumpObject(const char* label, std::uintptr_t obj) {
     constexpr int kWords = 8;
     std::uintptr_t words[kWords]{};
-    std::memcpy(words, reinterpret_cast<const void*>(obj), sizeof(words));
+    if (!SafeRead(obj, words, sizeof(words))) {
+        Log("  %s @ 0x%llx: [объект уже освобождён, чтение отменено]", label,
+            static_cast<unsigned long long>(obj));
+        return;
+    }
 
     char line[512]{};
     std::size_t used = 0;
@@ -325,6 +365,13 @@ DWORD WINAPI Worker(LPVOID) {
     Log("=== поиск объектов игры (каждые %lu мс, всего %d раз) ===",
         static_cast<unsigned long>(kScanIntervalMs), kScans);
 
+    // Абсолютные адреса vtable считаем один раз: база модуля не меняется.
+    std::vector<std::uintptr_t> vftables;
+    vftables.reserve(std::size(kClasses));
+    for (const auto& cls : kClasses) {
+        vftables.push_back(info.base + cls.vftable_rva);
+    }
+
     std::vector<std::vector<std::uintptr_t>> previous(std::size(kClasses));
 
     for (int pass = 0; pass < kScans; ++pass) {
@@ -332,9 +379,10 @@ DWORD WINAPI Worker(LPVOID) {
         Log("--- проход %d (t+%llu мс) ---", pass + 1,
             static_cast<unsigned long long>(GetTickCount64() - started));
 
+        const auto all = FindAllInstances(vftables, kMaxHitsPerClass);
+
         for (std::size_t c = 0; c < std::size(kClasses); ++c) {
-            const std::uintptr_t vt = info.base + kClasses[c].vftable_rva;
-            const auto hits = FindInstances(vt, kMaxHitsPerClass);
+            const auto& hits = all[c];
             const bool changed = hits != previous[c];
             if (changed) {
                 Log("%-22s : найдено %zu", kClasses[c].name, hits.size());
