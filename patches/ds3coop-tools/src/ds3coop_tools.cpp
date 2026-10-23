@@ -213,6 +213,19 @@ std::size_t CountRvaRefs(std::uintptr_t begin, std::uintptr_t end,
     return hits;
 }
 
+// Диапазон адресов, который поиск должен игнорировать.
+struct Range {
+    std::uintptr_t begin;
+    std::uintptr_t end;
+};
+
+bool InAnyRange(std::uintptr_t addr, const std::vector<Range>& ranges) {
+    for (const auto& r : ranges) {
+        if (addr >= r.begin && addr < r.end) return true;
+    }
+    return false;
+}
+
 // Ищем сразу все классы за один проход по памяти. Раньше на каждый класс
 // приходился отдельный проход по всей памяти — 10 проходов вместо одного,
 // то есть в 10 раз больше чтения при том же результате.
@@ -221,10 +234,21 @@ std::size_t CountRvaRefs(std::uintptr_t begin, std::uintptr_t end,
 // игра в это время выделяет и освобождает память, и прямое чтение может
 // попасть на только что освобождённую страницу. ReadProcessMemory в таком
 // случае вернёт FALSE, а не уронит процесс.
+//
+// excluded — наша собственная память. Без этого поиск находит САМ СЕБЯ:
+// массив адресов vtable лежит в куче и состоит ровно из тех значений,
+// которые мы ищем. В логе 02:31 это дало ложные «объекты», идущие подряд
+// через 8 байт (0x...430, 0x...438, 0x...440 ...) — это был наш массив.
 std::vector<std::vector<std::uintptr_t>> FindAllInstances(
-    const std::vector<std::uintptr_t>& vftables, std::size_t max_hits) {
+    const std::vector<std::uintptr_t>& vftables, std::size_t max_hits,
+    const std::vector<Range>& excluded) {
     constexpr std::size_t kChunk = 0x10000;  // 64 КБ — один вызов на кусок
     std::vector<std::vector<std::uintptr_t>> all(vftables.size());
+    // Резервируем заранее: иначе push_back перевыделяет память, старые
+    // блоки освобождаются, и следующий проход может прочитать в них
+    // остатки прежних значений — снова ложные срабатывания.
+    for (auto& v : all) v.reserve(max_hits);
+
     std::vector<std::uintptr_t> buffer(kChunk / sizeof(std::uintptr_t));
     SYSTEM_INFO si{};
     GetSystemInfo(&si);
@@ -249,10 +273,12 @@ std::vector<std::vector<std::uintptr_t>> FindAllInstances(
                 for (std::size_t i = 0; i < words_want; ++i) {
                     const std::uintptr_t word = buffer[i];
                     if (!word) continue;
+                    const auto hit = addr + i * sizeof(std::uintptr_t);
+                    if (InAnyRange(hit, excluded)) continue;
                     for (std::size_t c = 0; c < vftables.size(); ++c) {
                         if (word != vftables[c]) continue;
                         if (all[c].size() >= max_hits) break;
-                        all[c].push_back(addr + i * sizeof(std::uintptr_t));
+                        all[c].push_back(hit);
                     }
                 }
             }
@@ -262,13 +288,23 @@ std::vector<std::vector<std::uintptr_t>> FindAllInstances(
 }
 
 // Печатает первые поля объекта — подсказка, какие смещения читать дальше.
-// Через SafeRead: объект мог быть освобождён между поиском и чтением.
-void DumpObject(const char* label, std::uintptr_t obj) {
+//
+// expected_vt — адрес vtable, по которому объект был найден. Проверяем его
+// ещё раз при чтении: между поиском и печатью объект могли освободить и
+// переиспользовать под другие данные. В логе 02:31 так и вышло — «GameMan»
+// напечатал первым словом 0x7ffeaa0172ef вместо адреса своей vtable.
+void DumpObject(const char* label, std::uintptr_t obj,
+                std::uintptr_t expected_vt) {
     constexpr int kWords = 8;
     std::uintptr_t words[kWords]{};
     if (!SafeRead(obj, words, sizeof(words))) {
         Log("  %s @ 0x%llx: [объект уже освобождён, чтение отменено]", label,
             static_cast<unsigned long long>(obj));
+        return;
+    }
+    if (words[0] != expected_vt) {
+        Log("  %s @ 0x%llx: [объект изменился, уже не %s — пропуск]", label,
+            static_cast<unsigned long long>(obj), label);
         return;
     }
 
@@ -372,6 +408,16 @@ DWORD WINAPI Worker(LPVOID) {
         vftables.push_back(info.base + cls.vftable_rva);
     }
 
+    // Наша собственная память, которую поиск обязан обходить стороной.
+    // Иначе он находит массив vftables, который мы же и держим в куче.
+    std::vector<Range> excluded;
+    const auto exclude_own = [&excluded](const void* p, std::size_t bytes) {
+        const auto a = reinterpret_cast<std::uintptr_t>(p);
+        if (a && bytes) excluded.push_back({a, a + bytes});
+    };
+    exclude_own(vftables.data(), vftables.capacity() * sizeof(std::uintptr_t));
+    exclude_own(kClasses, sizeof(kClasses));
+
     std::vector<std::vector<std::uintptr_t>> previous(std::size(kClasses));
 
     for (int pass = 0; pass < kScans; ++pass) {
@@ -379,7 +425,7 @@ DWORD WINAPI Worker(LPVOID) {
         Log("--- проход %d (t+%llu мс) ---", pass + 1,
             static_cast<unsigned long long>(GetTickCount64() - started));
 
-        const auto all = FindAllInstances(vftables, kMaxHitsPerClass);
+        const auto all = FindAllInstances(vftables, kMaxHitsPerClass, excluded);
 
         for (std::size_t c = 0; c < std::size(kClasses); ++c) {
             const auto& hits = all[c];
@@ -393,7 +439,7 @@ DWORD WINAPI Worker(LPVOID) {
                     const bool inside_image =
                         addr >= info.base && addr < info.base + info.size;
                     if (inside_image) continue;
-                    DumpObject(kClasses[c].name, addr);
+                    DumpObject(kClasses[c].name, addr, vftables[c]);
                 }
                 previous[c] = hits;
             } else if (pass == 0) {
